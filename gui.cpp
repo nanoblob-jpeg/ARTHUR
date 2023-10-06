@@ -8,6 +8,7 @@
 #include <QString>
 #include <iostream>
 #include "gui.hpp"
+
 MainFrame::MainFrame(QWidget *parent) : QWidget(parent){
     prefix = "";
     pref = 0;
