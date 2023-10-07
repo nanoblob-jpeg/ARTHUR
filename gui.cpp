@@ -6,13 +6,22 @@
 #include <QLabel>
 #include <QGridLayout>
 #include <QString>
+#include <QTimer>
 #include <iostream>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include "gui.hpp"
 MainFrame::MainFrame(QWidget *parent) : QWidget(parent){
     prefix = "";
     pref = 0;
     blocksize = 1;
     blocksize <<= 60;
+    upperbound = 0;
+    upperbound--;
+    fd = mknod("/tmp/fifo_file", S_IFIFO|0640, 0);
+    file = open("/tmp/fifo_file", O_RDONLY|O_NONBLOCK);
     vbox = new QVBoxLayout(this);
 
     auto *memoryPrefixLabel = new QLabel("Prefix:", this);
@@ -46,6 +55,11 @@ MainFrame::MainFrame(QWidget *parent) : QWidget(parent){
     vbox->addWidget(goBack);
 
     setLayout(vbox);
+    recalculate();
+
+    QTimer *timer = new QTimer(this);
+    connect(timer, SIGNAL(timeout()), this, SLOT(readMemoryAccess()));
+    timer->start(100);
 }
 
 void MainFrame::clicked(int index){
@@ -71,8 +85,7 @@ void MainFrame::clicked(int index){
         blocksize >>= 12;
         upperbound = pref+blocksize*4096-1;
     }
-    //recalculate();
-    std::cerr << prefix << ' ' << pref << ' ' << blocksize << ' ' << upperbound << '\n';
+    recalculate();
 }
 
 void MainFrame::back(){
@@ -98,20 +111,127 @@ void MainFrame::back(){
         blocksize <<= 12;
         upperbound = pref+blocksize*4096-1;
     }
-    //recalculate();
-    std::cerr << prefix << ' ' << pref << ' ' << blocksize << ' ' << upperbound << '\n';
+    recalculate();
 }
 
 void MainFrame::recalculate(){
+    memset(values, 0, sizeof(values));
     auto it = intervals.lower_bound(pref);
     if(it != intervals.begin()){
         it--;
         if(it->second < pref)
             it++;
     }
-    for(; it != intervals.end() && it->first <= pref-1+blocksize*4096; ++it){
-        
+    int ind{};
+    unsigned long long blockleft = pref;
+    unsigned long long blockright = pref-1+blocksize;
+    for(; it != intervals.end() && it->first <= upperbound; ++it){
+        while(ind < 4096 && blockright < it->first){
+            ind++;
+            blockleft += blocksize;
+            blockright += blocksize;
+        }
+        while(ind < 4096 && it->second > blockright){
+            values[ind] += std::min(it->second, blockright) - std::max(it->first, blockleft) + 1;
+            ind++;
+            blockleft += blocksize;
+            blockright += blocksize;
+        }
+        if(ind < 4096 && it->second >= blockleft){
+            values[ind] += std::min(it->second, blockright) - std::max(it->first, blockleft) + 1;
+        }
     }
+
+    if(prefix.size() == 0){
+        for(int i{}; i < 64; ++i){
+            for(int j{}; j < 64; ++j){
+                int place = (i/16)*4 + (j%64)/16;
+                if(values[place] == 0){
+                    grid->itemAtPosition(i, j)->widget()->setStyleSheet("background-color:rgb(0, 0, 0); border:none;");
+                }else{
+                    unsigned long long red = 255*(((long double)values[place])/blocksize);
+                    unsigned long long green = 255-red;
+                    grid->itemAtPosition(i, j)->widget()->setStyleSheet(QString("background-color:rgb(%1, %2, 0); border:none;").arg(red).arg(green));
+                }
+            }
+        }
+    }else{
+        for(int i{}; i < 64; ++i){
+            for(int j{}; j < 64; ++j){
+                int place = i*64+j;
+                if(values[place] == 0){
+                    grid->itemAtPosition(i, j)->widget()->setStyleSheet("background-color:rgb(0, 0, 0); border:none;");
+                }else{
+                    unsigned long long red = 255*(((long double)values[place])/blocksize);
+                    unsigned long long green = 255-red;
+                    grid->itemAtPosition(i, j)->widget()->setStyleSheet(QString("background-color:rgb(%1, %2, 0); border:none;").arg(red).arg(green));
+                }
+            }
+        }
+    }
+}
+
+void other(int fd){
+    close(fd);
+}
+
+void MainFrame::calcAndAdd(unsigned long long left, unsigned long long right, bool sub = false){
+    if(left <= pref && right >= upperbound){
+        for(int i{}; i < 4096; ++i){
+            if(sub){
+                values[i] = 0;
+                grid->itemAtPosition(i/64, i%64)->widget()->setStyleSheet("background-color:rgb(0, 0, 0); border:none;");
+            }else{
+                values[i] = blocksize;
+                grid->itemAtPosition(i/64, i%64)->widget()->setStyleSheet("background-color:rgb(255, 0, 0); border:none;");
+            }
+        }
+    }else if(right < pref || left > upperbound){
+        return;
+    }else{
+        unsigned long long leftind = (left-pref)/blocksize;
+        unsigned long long rightind = (right-pref)/blocksize;
+        for(unsigned long long i = leftind; i <= rightind; ++i){
+            unsigned long long lbound = pref + (blocksize*i);
+            unsigned long long rbound = lbound+blocksize-1;
+
+            if(sub)
+                values[i] -= std::min(right, rbound) - std::max(left, lbound)+1;
+            else
+                values[i] += std::min(right, rbound) - std::max(left, lbound)+1;
+            unsigned long long red = 255*(((long double)values[i])/blocksize);
+            unsigned long long green = 255-red;
+            if(prefix.size() == 0){
+                for(unsigned long long j = (i/4)*16; j < (i/4)*16+16; ++j){
+                    for(unsigned long long k = (i%4)*16; k < (i%4)*16+16; ++k){
+                        grid->itemAtPosition(j, k)->widget()->setStyleSheet(QString("background-color:rgb(%1, %2, 0); border:none;").arg(red).arg(green));
+                    }
+                }
+            }else{
+                grid->itemAtPosition(i/64, i%64)->widget()->setStyleSheet(QString("background-color:rgb(%1, %2, 0); border:none;").arg(red).arg(green));
+            }
+
+        }
+    }
+}
+
+void MainFrame::readMemoryAccess(){
+    for(int i{}; i < 100; ++i){
+        int read_bytes = read(file, readbuf, sizeof(readbuf));
+        if(read_bytes <= 0)
+            break;
+        if(readbuf[1] == 0){
+            calcAndAdd(readbuf[0], intervals[readbuf[0]], true);
+            intervals.erase(readbuf[0]);
+        }else{
+            calcAndAdd(readbuf[0], readbuf[0]+readbuf[1]-1);
+            intervals[readbuf[0]] = readbuf[0]+readbuf[1]-1;
+        }
+    }
+}
+
+MainFrame::~MainFrame(){
+    other(file);
 }
 
 int main(int argc, char *argv[]) {
