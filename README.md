@@ -8,7 +8,7 @@ There is a precompiled shared library called 'libmalloc.so' from the file alloca
 
 Steps:
 
-1) Start up the memory visualizer. There is a compiled version called memory_visualizer. If this does not work, you will have to download Qt then run make.\\
+1) Start up the memory visualizer. There is a compiled version called memory_visualizer. If this does not work, you will have to download Qt then run make.
 2) Run ```./preload.sh ./target_program```
 
 ## GUI
